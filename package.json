@@ -1,0 +1,21 @@
+{
+  "name": "glasshopper",
+  "version": "0.1.0",
+  "type": "module",
+  "private": false,
+  "description": "A small Windows-first MSFS 2024 pop-out window placer.",
+  "bin": {
+    "glasshopper": "./src/index.ts"
+  },
+  "scripts": {
+    "glasshopper": "bun run src/index.ts",
+    "doctor": "bun run src/index.ts doctor",
+    "discover": "bun run src/index.ts discover",
+    "check": "bun run tsc --noEmit",
+    "build:windows": "bun build ./src/index.ts --compile --target=bun-windows-x64 --outfile dist/glasshopper.exe"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "latest"
+  }
+}

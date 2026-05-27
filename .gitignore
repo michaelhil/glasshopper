@@ -1,0 +1,4 @@
+dist/
+node_modules/
+profiles/*.local.json
+.DS_Store
