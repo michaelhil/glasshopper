@@ -112,13 +112,52 @@ Commands:
   discover [--all]
     List displays and likely MSFS windows. Use --all to include all visible windows.
 
+  panels [--profile default]
+    List MSFS pop-out panels with onscreen, duplicate-title, and profile status.
+
+  bring-in [--display 0] [--dry-run]
+    Move offscreen MSFS pop-out panels into a temporary visible staging layout.
+
+  rename --handle 0x123 --title "Glasshopper:profile:panel"
+    Rename a specific pop-out window so profiles can match duplicate panel titles.
+
+  identify --profile default --handle 0x123 --name pfd [--display 0] [--topmost]
+    Rename a panel as Glasshopper:<profile>:<name> and save its current layout.
+
+  layout --profile default --from-current [--display 0]
+    Update an existing profile's panel placements from their current window positions.
+
+  remove --profile default --name panel-name
+    Remove a stale panel entry from a profile.
+
+  adopt --profile default [--display 0] [--topmost]
+    Interactively name unprofiled MSFS pop-outs and save them to a profile.
+
+  setup --profile default [--display 0] [--topmost]
+    Guided flow: diagnose, bring in panels, adopt unprofiled panels, save layout, and preflight.
+
+  repair --profile default [--prune]
+    Report stale profile entries and optionally remove them.
+
+  profile list
+    List saved profiles.
+
+  profile show --profile default
+    Show profile entries and live matching health.
+
+  sim-state
+    Probe SimConnect availability and current aircraft/camera state.
+
   save --profile default --name pfd --display <stableId|index>
        --title <text> [--process FlightSimulator2024] [--class <class>]
        [--x 0 --y 0 --width 1024 --height 768] [--topmost]
     Save one conservative panel placement.
 
-  apply --profile default
-    Apply all placements in a profile. Fails if a panel matches zero or multiple windows.
+  apply --profile default [--dry-run]
+    Validate or apply all placements in a profile. Fails if a panel matches zero or multiple windows.
+
+  preflight --profile default
+    Check whether a profile can safely run before sending any input or moving windows.
 
   move --handle 0x123 --display <stableId|index>
        [--x 0 --y 0 --width 1024 --height 768] [--topmost]

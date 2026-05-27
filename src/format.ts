@@ -18,6 +18,7 @@ export const formatDisplay = (display: DisplayInfo): string => {
 export const formatWindow = (window: WindowInfo): string =>
   [
     `${window.handle} ${window.processName}(${window.processId})`,
+    `  kind: ${window.kind ?? "unknown"}`,
     `  title: ${window.title || "(untitled)"}`,
     `  class: ${window.className}`,
     `  rect: ${formatRect(window.rect)}`

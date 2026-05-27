@@ -33,9 +33,33 @@ export interface WindowInfo {
   readonly processName: string;
   readonly rect: Rect;
   readonly isVisible: boolean;
+  readonly kind?: string;
+}
+
+export interface ProcessInfo {
+  readonly processId: number;
+  readonly processName: string;
+  readonly mainWindowHandle: string;
+  readonly mainWindowTitle: string;
+  readonly responding: boolean;
+}
+
+export interface SimState {
+  readonly available: boolean;
+  readonly connected: boolean;
+  readonly sdkPath?: string;
+  readonly aircraftPath?: string;
+  readonly aircraftName?: string;
+  readonly cameraState?: number;
+  readonly cameraViewTypeAndIndex0?: number;
+  readonly cameraViewTypeAndIndex1?: number;
+  readonly cameraViewTypeAndIndex1Max?: number;
+  readonly cameraViewTypeAndIndex2Max?: number;
+  readonly error?: string;
 }
 
 export interface WindowMatch {
+  readonly titleExact?: string;
   readonly titleContains?: string;
   readonly processName?: string;
   readonly className?: string;

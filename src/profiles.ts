@@ -28,6 +28,9 @@ export const writeProfile = async (name: string, profile: GlasshopperProfile): P
 };
 
 export const matchWindow = (window: WindowInfo, match: WindowMatch): boolean => {
+  const exactTitleOk =
+    !match.titleExact ||
+    window.title.toLocaleLowerCase() === match.titleExact.toLocaleLowerCase();
   const titleOk =
     !match.titleContains ||
     window.title.toLocaleLowerCase().includes(match.titleContains.toLocaleLowerCase());
@@ -38,7 +41,7 @@ export const matchWindow = (window: WindowInfo, match: WindowMatch): boolean => 
     !match.className ||
     window.className.toLocaleLowerCase() === match.className.toLocaleLowerCase();
 
-  return titleOk && processOk && classOk;
+  return exactTitleOk && titleOk && processOk && classOk;
 };
 
 export const findOneWindow = (
@@ -49,6 +52,19 @@ export const findOneWindow = (
   const matches = windows.filter((window) => matchWindow(window, match));
   if (matches.length === 1) {
     return matches[0]!;
+  }
+
+  if (matches.length > 1 && match.titleExact) {
+    return fail(`Profile "${profileName}" matched ${matches.length} windows with exact title "${match.titleExact}". Rename or close duplicate pop-outs.`);
+  }
+
+  if (matches.length > 1 && match.titleContains) {
+    const exactTitleMatches = matches.filter(
+      (window) => window.title.toLocaleLowerCase() === match.titleContains?.toLocaleLowerCase()
+    );
+    if (exactTitleMatches.length === 1) {
+      return exactTitleMatches[0]!;
+    }
   }
 
   if (matches.length === 0) {
@@ -103,6 +119,30 @@ export const createPanelProfile = (input: {
     y: input.rect.y,
     width: input.rect.width,
     height: input.rect.height,
+    alwaysOnTop: input.alwaysOnTop
+  }
+});
+
+export const createPanelProfileFromWindow = (input: {
+  readonly name: string;
+  readonly title: string;
+  readonly window: WindowInfo;
+  readonly display: DisplayInfo;
+  readonly alwaysOnTop: boolean;
+}): PanelProfile => ({
+  name: input.name,
+  window: {
+    titleExact: input.title,
+    processName: input.window.processName,
+    className: input.window.className
+  },
+  placement: {
+    displayStableId: input.display.identity.stableId,
+    displayFallbackFingerprint: input.display.identity.fingerprint,
+    x: input.window.rect.x - input.display.bounds.x,
+    y: input.window.rect.y - input.display.bounds.y,
+    width: input.window.rect.width,
+    height: input.window.rect.height,
     alwaysOnTop: input.alwaysOnTop
   }
 });
