@@ -118,6 +118,9 @@ Commands:
   bring-in [--display 0] [--dry-run]
     Move offscreen MSFS pop-out panels into a temporary visible staging layout.
 
+  capture-next --profile default --name pfd [--display 0] [--topmost]
+    Wait for the next new MSFS pop-out, rename it, stage it on a display, and save it.
+
   rename --handle 0x123 --title "Glasshopper:profile:panel"
     Rename a specific pop-out window so profiles can match duplicate panel titles.
 

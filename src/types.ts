@@ -75,10 +75,25 @@ export interface Placement {
   readonly alwaysOnTop?: boolean;
 }
 
+export interface PanelSourceBinding {
+  readonly x: number;
+  readonly y: number;
+  readonly cameraProvider?: "msfs" | "chaseplane" | "manual";
+  readonly aircraftName?: string;
+  readonly aircraftPath?: string;
+  readonly cameraState?: number;
+  readonly cameraViewTypeAndIndex0?: number;
+  readonly cameraViewTypeAndIndex1?: number;
+  readonly chasePlaneBridgeConnected?: boolean;
+  readonly clickMethod: "altGrClick" | "ctrlClick";
+  readonly capturedAt: string;
+}
+
 export interface PanelProfile {
   readonly name: string;
   readonly window: WindowMatch;
   readonly placement: Placement;
+  readonly source?: PanelSourceBinding;
 }
 
 export interface GlasshopperProfile {

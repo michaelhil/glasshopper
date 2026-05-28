@@ -17,6 +17,11 @@ function Convert-ArrayString($value) {
   -join $chars
 }
 
+function Convert-AgentSafeString($value) {
+  if ($null -eq $value) { return "" }
+  (([string]$value) -replace '"', "'") -replace "[\u0000-\u001F]", ""
+}
+
 function Write-AgentResult($value) {
   [pscustomobject]@{ ok = $true; value = $value } | ConvertTo-Json -Depth 12 -Compress
 }
@@ -42,8 +47,14 @@ public static class GlasshopperNativeWindows {
   [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out Rect lpRect);
   [DllImport("user32.dll", SetLastError = true)] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+  [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
   [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern bool SetWindowText(IntPtr hWnd, string lpString);
   [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+  [DllImport("user32.dll", SetLastError = true)] public static extern bool SetProcessDpiAwarenessContext(IntPtr dpiContext);
   [DllImport("dwmapi.dll", PreserveSig = true)] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out Rect pvAttribute, int cbAttribute);
   [DllImport("dwmapi.dll", PreserveSig = true)] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int dwAttribute, out int pvAttribute, int cbAttribute);
 
@@ -53,11 +64,41 @@ public static class GlasshopperNativeWindows {
     public int Right;
     public int Bottom;
   }
+
+  [StructLayout(LayoutKind.Sequential)] public struct Input {
+    public uint type;
+    public InputUnion u;
+  }
+
+  [StructLayout(LayoutKind.Explicit)] public struct InputUnion {
+    [FieldOffset(0)] public MouseInput mi;
+    [FieldOffset(0)] public KeyboardInput ki;
+  }
+
+  [StructLayout(LayoutKind.Sequential)] public struct MouseInput {
+    public int dx;
+    public int dy;
+    public uint mouseData;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+  }
+
+  [StructLayout(LayoutKind.Sequential)] public struct KeyboardInput {
+    public ushort wVk;
+    public ushort wScan;
+    public uint dwFlags;
+    public uint time;
+    public UIntPtr dwExtraInfo;
+  }
 }
 "@
 
   Add-Type -TypeDefinition $source -ErrorAction SilentlyContinue
-  [void][GlasshopperNativeWindows]::SetProcessDPIAware()
+  $perMonitorV2 = [IntPtr]::new(-4)
+  if (-not [GlasshopperNativeWindows]::SetProcessDpiAwarenessContext($perMonitorV2)) {
+    [void][GlasshopperNativeWindows]::SetProcessDPIAware()
+  }
 }
 
 function Convert-Rect($rect) {
@@ -157,14 +198,14 @@ function Get-Windows($includeAll) {
     [void][GlasshopperNativeWindows]::GetWindowText($hWnd, $titleBuilder, $titleBuilder.Capacity)
     [void][GlasshopperNativeWindows]::GetClassName($hWnd, $classBuilder, $classBuilder.Capacity)
 
-    $title = $titleBuilder.ToString()
-    $className = $classBuilder.ToString()
+    $title = Convert-AgentSafeString ($titleBuilder.ToString())
+    $className = Convert-AgentSafeString ($classBuilder.ToString())
 
     [uint32]$nativeProcessId = 0
     [void][GlasshopperNativeWindows]::GetWindowThreadProcessId($hWnd, [ref]$nativeProcessId)
     $processName = "unknown"
     try {
-      $processName = (Get-Process -Id $nativeProcessId -ErrorAction Stop).ProcessName
+      $processName = Convert-AgentSafeString (Get-Process -Id $nativeProcessId -ErrorAction Stop).ProcessName
     } catch {}
 
     $kind = Get-WindowKind $className $title $processName
@@ -243,6 +284,196 @@ function Set-AgentWindowTitle($payload) {
   [pscustomobject]@{ ok = $true }
 }
 
+function Add-NativeMouseHookType {
+  $source = @"
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+public static class GlasshopperMouseHook {
+  private const int WH_MOUSE_LL = 14;
+  private const int WM_LBUTTONDOWN = 0x0201;
+
+  private static IntPtr hookId = IntPtr.Zero;
+  private static LowLevelMouseProc proc = HookCallback;
+  private static ManualResetEventSlim clicked = new ManualResetEventSlim(false);
+
+  public static int X { get; private set; }
+  public static int Y { get; private set; }
+
+  public static bool Capture(int timeoutMs) {
+    clicked.Reset();
+    using (Process currentProcess = Process.GetCurrentProcess())
+    using (ProcessModule currentModule = currentProcess.MainModule) {
+      hookId = SetWindowsHookEx(WH_MOUSE_LL, proc, GetModuleHandle(currentModule.ModuleName), 0);
+    }
+    if (hookId == IntPtr.Zero) {
+      throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+    }
+    try {
+      return clicked.Wait(timeoutMs);
+    } finally {
+      UnhookWindowsHookEx(hookId);
+      hookId = IntPtr.Zero;
+    }
+  }
+
+  private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+    if (nCode >= 0 && wParam == (IntPtr)WM_LBUTTONDOWN) {
+      MSLLHOOKSTRUCT hookStruct = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+      X = hookStruct.pt.x;
+      Y = hookStruct.pt.y;
+      clicked.Set();
+    }
+    return CallNextHookEx(hookId, nCode, wParam, lParam);
+  }
+
+  private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct POINT {
+    public int x;
+    public int y;
+  }
+
+  [StructLayout(LayoutKind.Sequential)]
+  private struct MSLLHOOKSTRUCT {
+    public POINT pt;
+    public uint mouseData;
+    public uint flags;
+    public uint time;
+    public IntPtr dwExtraInfo;
+  }
+
+  [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
+
+  [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+  [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+  [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+  private static extern IntPtr GetModuleHandle(string lpModuleName);
+}
+"@
+
+  Add-Type -TypeDefinition $source -ErrorAction SilentlyContinue
+}
+
+function Capture-AgentClick($payload) {
+  Add-NativeMouseHookType
+  $timeoutMs = if ($payload.timeoutMs) { [int]$payload.timeoutMs } else { 30000 }
+  $ok = [GlasshopperMouseHook]::Capture($timeoutMs)
+  if (-not $ok) {
+    throw "Timed out waiting for left click."
+  }
+  [pscustomobject]@{
+    x = [GlasshopperMouseHook]::X
+    y = [GlasshopperMouseHook]::Y
+  }
+}
+
+function Get-MsfsMainWindowHandle {
+  $handle = [IntPtr]::Zero
+  foreach ($window in @(Get-Windows $true)) {
+    if ($window.kind -eq "msfs-main") {
+      $handleText = [string]$window.handle
+      $handle = [IntPtr]::new([Convert]::ToInt64($handleText, 16))
+      break
+    }
+  }
+  $handle
+}
+
+function Invoke-AgentPopOutClick($payload) {
+  Add-NativeWindowsType
+
+  $mainHandle = Get-MsfsMainWindowHandle
+  if ($mainHandle -eq [IntPtr]::Zero) {
+    throw "MSFS main window was not found."
+  }
+
+  $x = [int]$payload.x
+  $y = [int]$payload.y
+  $method = [string]$payload.clickMethod
+
+  [void][GlasshopperNativeWindows]::ShowWindow($mainHandle, 9)
+  [void][GlasshopperNativeWindows]::SetForegroundWindow($mainHandle)
+  Start-Sleep -Milliseconds 350
+  [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 200
+
+  Send-AgentLeftClick $x $y
+  Start-Sleep -Milliseconds 250
+
+  if ($method -eq "ctrlClick") {
+    Send-AgentModifiedClick @([uint16]0xA2, [uint16]0xA3) $x $y
+  } else {
+    # AltGr is seen by many apps as Ctrl+RightAlt. Send both instead of RightAlt alone.
+    Send-AgentModifiedClick @([uint16]0xA2, [uint16]0xA5) $x $y
+  }
+
+  Start-Sleep -Milliseconds 100
+  [pscustomobject]@{ ok = $true }
+}
+
+function New-AgentKeyboardInput($vk, $flags) {
+  $input = New-Object GlasshopperNativeWindows+Input
+  $input.type = 1
+  $input.u.ki.wVk = [uint16]$vk
+  $input.u.ki.wScan = 0
+  $input.u.ki.dwFlags = [uint32]$flags
+  $input.u.ki.time = 0
+  $input.u.ki.dwExtraInfo = [UIntPtr]::Zero
+  $input
+}
+
+function New-AgentMouseInput($flags) {
+  $input = New-Object GlasshopperNativeWindows+Input
+  $input.type = 0
+  $input.u.mi.dx = 0
+  $input.u.mi.dy = 0
+  $input.u.mi.mouseData = 0
+  $input.u.mi.dwFlags = [uint32]$flags
+  $input.u.mi.time = 0
+  $input.u.mi.dwExtraInfo = [UIntPtr]::Zero
+  $input
+}
+
+function Send-AgentInputs($inputs) {
+  $array = [GlasshopperNativeWindows+Input[]]$inputs
+  $sent = [GlasshopperNativeWindows]::SendInput([uint32]$array.Length, $array, [Runtime.InteropServices.Marshal]::SizeOf([type][GlasshopperNativeWindows+Input]))
+  if ($sent -ne $array.Length) {
+    $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "SendInput sent $sent of $($array.Length) events. Win32 error $code"
+  }
+}
+
+function Send-AgentLeftClick($x, $y) {
+  [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
+  Send-AgentInputs @(
+    (New-AgentMouseInput 0x0002),
+    (New-AgentMouseInput 0x0004)
+  )
+}
+
+function Send-AgentModifiedClick($keys, $x, $y) {
+  [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
+  $events = @()
+  foreach ($key in $keys) {
+    $events += New-AgentKeyboardInput $key 0
+  }
+  $events += New-AgentMouseInput 0x0002
+  $events += New-AgentMouseInput 0x0004
+  foreach ($key in @($keys | Sort-Object -Descending)) {
+    $events += New-AgentKeyboardInput $key 0x0002
+  }
+  Send-AgentInputs $events
+}
+
 function Get-MsfsProcesses {
   Get-Process -ErrorAction SilentlyContinue |
     Where-Object { $_.ProcessName -match "FlightSimulator2024|FlightSimulator|Limitless|MSFS|couatl64_MSFS2024|CP MSFS Bridge" } |
@@ -316,13 +547,25 @@ public class GlasshopperSimProbe : Form {
     AircraftPath = 100
   }
 
+  private enum WritableDefinition {
+    CameraState = 200,
+    CameraRequestAction = 201,
+    CameraViewTypeAndIndex0 = 202,
+    CameraViewTypeAndIndex1 = 203
+  }
+
   [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, CharSet = System.Runtime.InteropServices.CharSet.Ansi, Pack = 1)]
-  public struct RequiredData {
-    public double CameraState;
-    public double CameraViewTypeAndIndex0;
-    public double CameraViewTypeAndIndex1;
-    public double CameraViewTypeAndIndex1Max;
-    public double CameraViewTypeAndIndex2Max;
+  public class RequiredData {
+    public double Prop0;
+    public double Prop1;
+    public double Prop2;
+    public double Prop3;
+    public double Prop4;
+  }
+
+  [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential, Pack = 1)]
+  public class WritableData {
+    public double Value;
   }
 
   public bool Connected { get; private set; }
@@ -353,8 +596,17 @@ public class GlasshopperSimProbe : Form {
       simConnect.AddToDataDefinition(DataDefinition.Required, "CAMERA VIEW TYPE AND INDEX MAX:2", "Number", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
       simConnect.RegisterDataDefineStruct<RequiredData>(DataDefinition.Required);
 
+      simConnect.AddToDataDefinition(WritableDefinition.CameraState, "CAMERA STATE", "Enum", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
+      simConnect.AddToDataDefinition(WritableDefinition.CameraRequestAction, "CAMERA REQUEST ACTION", "Enum", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
+      simConnect.AddToDataDefinition(WritableDefinition.CameraViewTypeAndIndex0, "CAMERA VIEW TYPE AND INDEX:0", "Number", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
+      simConnect.AddToDataDefinition(WritableDefinition.CameraViewTypeAndIndex1, "CAMERA VIEW TYPE AND INDEX:1", "Number", SIMCONNECT_DATATYPE.FLOAT64, 0.0f, SimConnect.SIMCONNECT_UNUSED);
+      simConnect.RegisterDataDefineStruct<WritableData>(WritableDefinition.CameraState);
+      simConnect.RegisterDataDefineStruct<WritableData>(WritableDefinition.CameraRequestAction);
+      simConnect.RegisterDataDefineStruct<WritableData>(WritableDefinition.CameraViewTypeAndIndex0);
+      simConnect.RegisterDataDefineStruct<WritableData>(WritableDefinition.CameraViewTypeAndIndex1);
+
       simConnect.RequestSystemState(SystemStateRequest.AircraftPath, "AircraftLoaded");
-      simConnect.RequestDataOnSimObjectType(DataRequest.Required, DataDefinition.Required, 0, SIMCONNECT_SIMOBJECT_TYPE.USER);
+      simConnect.RequestDataOnSimObject(DataRequest.Required, DataDefinition.Required, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_PERIOD.ONCE, SIMCONNECT_DATA_REQUEST_FLAG.DEFAULT, 0, 0, 0);
     } catch (Exception ex) {
       Error = ex.Message;
     }
@@ -387,14 +639,36 @@ public class GlasshopperSimProbe : Form {
     }
   }
 
+  public void SetCamera(double? cameraState, double? viewTypeIndex0, double? viewTypeIndex1) {
+    if (simConnect == null || !Connected) { return; }
+
+    if (cameraState.HasValue) {
+      simConnect.SetDataOnSimObject(WritableDefinition.CameraState, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_DATA_SET_FLAG.DEFAULT, new WritableData { Value = cameraState.Value });
+      Pump(250);
+    }
+
+    simConnect.SetDataOnSimObject(WritableDefinition.CameraRequestAction, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_DATA_SET_FLAG.DEFAULT, new WritableData { Value = 1 });
+    Pump(250);
+
+    if (viewTypeIndex0.HasValue) {
+      simConnect.SetDataOnSimObject(WritableDefinition.CameraViewTypeAndIndex0, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_DATA_SET_FLAG.DEFAULT, new WritableData { Value = viewTypeIndex0.Value });
+      Pump(250);
+    }
+
+    if (viewTypeIndex1.HasValue) {
+      simConnect.SetDataOnSimObject(WritableDefinition.CameraViewTypeAndIndex1, SimConnect.SIMCONNECT_OBJECT_ID_USER, SIMCONNECT_DATA_SET_FLAG.DEFAULT, new WritableData { Value = viewTypeIndex1.Value });
+      Pump(500);
+    }
+  }
+
   private void OnRecvSimobjectDataByType(SimConnect sender, SIMCONNECT_RECV_SIMOBJECT_DATA_BYTYPE data) {
     if (data.dwRequestID != (uint)DataRequest.Required) { return; }
     var received = (RequiredData)data.dwData[0];
-    CameraState = received.CameraState;
-    CameraViewTypeAndIndex0 = received.CameraViewTypeAndIndex0;
-    CameraViewTypeAndIndex1 = received.CameraViewTypeAndIndex1;
-    CameraViewTypeAndIndex1Max = received.CameraViewTypeAndIndex1Max;
-    CameraViewTypeAndIndex2Max = received.CameraViewTypeAndIndex2Max;
+    CameraState = received.Prop0;
+    CameraViewTypeAndIndex0 = received.Prop1;
+    CameraViewTypeAndIndex1 = received.Prop2;
+    CameraViewTypeAndIndex1Max = received.Prop3;
+    CameraViewTypeAndIndex2Max = received.Prop4;
   }
 }
 "@
@@ -437,6 +711,38 @@ public class GlasshopperSimProbe : Form {
   }
 }
 
+function Invoke-RestoreCamera($payload) {
+  $managedDll = Find-SimConnectManagedDll
+  if (-not $managedDll) {
+    throw "Microsoft.FlightSimulator.SimConnect.dll was not found."
+  }
+
+  # Reuse the probe class so camera writes and readiness checks stay in one place.
+  $state = Invoke-SimConnectProbe
+  if (-not $state.connected) {
+    throw "SimConnect is not connected."
+  }
+
+  $probe = New-Object GlasshopperSimProbe
+  try {
+    $probe.Start()
+    $probe.Pump(1000)
+    if (-not $probe.Connected) {
+      throw "SimConnect is not connected."
+    }
+
+    $cameraState = if ($null -ne $payload.cameraState) { [double]$payload.cameraState } else { $null }
+    $view0 = if ($null -ne $payload.cameraViewTypeAndIndex0) { [double]$payload.cameraViewTypeAndIndex0 } else { $null }
+    $view1 = if ($null -ne $payload.cameraViewTypeAndIndex1) { [double]$payload.cameraViewTypeAndIndex1 } else { $null }
+    $probe.SetCamera($cameraState, $view0, $view1)
+  } finally {
+    $probe.CloseProbe()
+    $probe.Dispose()
+  }
+
+  [pscustomobject]@{ ok = $true }
+}
+
 try {
   $payload = $PayloadJson | ConvertFrom-Json
 
@@ -463,6 +769,18 @@ try {
     }
     "set-title" {
       Write-AgentResult (Set-AgentWindowTitle $payload)
+      break
+    }
+    "capture-click" {
+      Write-AgentResult (Capture-AgentClick $payload)
+      break
+    }
+    "popout-click" {
+      Write-AgentResult (Invoke-AgentPopOutClick $payload)
+      break
+    }
+    "restore-camera" {
+      Write-AgentResult (Invoke-RestoreCamera $payload)
       break
     }
     default {

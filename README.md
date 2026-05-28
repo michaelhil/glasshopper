@@ -2,6 +2,8 @@
 
 Glasshopper is a small Windows-first proof of concept for placing Microsoft Flight Simulator 2024 pop-out windows on a chosen display.
 
+For the latest live-test notes and the current ChasePlane helper plan, start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
+
 Version `0.1.0` is intentionally narrow: it does not click cockpit panels, crop panels, use SimConnect, or modify MSFS files. It proves the foundation first:
 
 - enumerate connected displays with stable identity metadata where Windows exposes it
@@ -33,11 +35,31 @@ bun install
 bun run glasshopper doctor
 ```
 
+To run the local UI:
+
+```powershell
+bun run ui
+```
+
+The UI serves at `http://localhost:32024` by default. Set `GLASSHOPPER_UI_PORT`
+to use a different port.
+
+The local UI is currently the preferred workflow for live testing. It can listen
+for new pop-outs, auto-bind the source click while Add Popout is active, list
+saved panels, apply saved layouts, and attempt Auto Reopen.
+
 To build a single Windows executable:
 
 ```powershell
 bun run build:windows
 .\dist\glasshopper.exe doctor
+```
+
+To build the local UI executable:
+
+```powershell
+bun run build:ui-windows
+.\dist\glasshopper-ui.exe
 ```
 
 ## Basic Workflow
@@ -74,7 +96,9 @@ bun run glasshopper save --profile default --name pfd --display 1 --title "Fligh
 bun run glasshopper apply --profile default
 ```
 
-Profiles are stored in `profiles/<name>.json`.
+Profiles are stored in `%APPDATA%\Glasshopper\profiles` on Windows. Set
+`GLASSHOPPER_PROFILE_DIR` to override this path. Existing source-checkout
+profiles in `profiles/<name>.json` are still read as a fallback.
 
 ## Display Identity
 
@@ -99,12 +123,15 @@ Included:
 
 Deferred:
 
-- SimConnect session and aircraft detection
-- automatic cockpit click/pop-out orchestration
+- full ChasePlane-driven camera restore for Auto Reopen
 - panel cropping and title-bar hiding
 - touch forwarding and focus recovery
-- graphical profile editor
-- installer packaging beyond Bun compile
+- installer packaging beyond Bun compile and the future MSFS helper package
+
+ChasePlane note: Glasshopper can detect ChasePlane and read saved view data, but
+the observed local websocket behaves as an observation channel for desktop
+clients. Reliable ChasePlane view restore likely needs a small Glasshopper MSFS
+helper panel/Community package that can use the in-sim comms path.
 
 ## Release Notes
 

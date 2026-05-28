@@ -4,6 +4,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DisplayInfo, MoveWindowRequest, ProcessInfo, SimState, WindowInfo } from "../types.ts";
 
+export interface CapturedClick {
+  readonly x: number;
+  readonly y: number;
+}
+
 interface AgentResult<T> {
   readonly ok: boolean;
   readonly value?: T;
@@ -103,4 +108,23 @@ export const moveWindowViaAgent = async (request: MoveWindowRequest): Promise<vo
 
 export const setWindowTitleViaAgent = async (handle: string, title: string): Promise<void> => {
   await runAgent<{ readonly ok: true }>("set-title", { handle, title });
+};
+
+export const captureClickViaAgent = async (timeoutMs: number): Promise<CapturedClick> =>
+  await runAgent<CapturedClick>("capture-click", { timeoutMs });
+
+export const popOutClickViaAgent = async (input: {
+  readonly x: number;
+  readonly y: number;
+  readonly clickMethod: "altGrClick" | "ctrlClick";
+}): Promise<void> => {
+  await runAgent<{ readonly ok: true }>("popout-click", input);
+};
+
+export const restoreCameraViaAgent = async (input: {
+  readonly cameraState?: number;
+  readonly cameraViewTypeAndIndex0?: number;
+  readonly cameraViewTypeAndIndex1?: number;
+}): Promise<void> => {
+  await runAgent<{ readonly ok: true }>("restore-camera", input);
 };

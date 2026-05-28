@@ -9,10 +9,12 @@
   },
   "scripts": {
     "glasshopper": "bun run src/index.ts",
+    "ui": "bun run src/ui-server.ts",
     "doctor": "bun run src/index.ts doctor",
     "discover": "bun run src/index.ts discover",
     "check": "bun run tsc --noEmit",
-    "build:windows": "bun build ./src/index.ts --compile --target=bun-windows-x64 --outfile dist/glasshopper.exe"
+    "build:windows": "bun build ./src/index.ts --compile --target=bun-windows-x64 --outfile dist/glasshopper.exe",
+    "build:ui-windows": "bun build ./src/ui-server.ts --compile --target=bun-windows-x64 --outfile dist/glasshopper-ui.exe"
   },
   "devDependencies": {
     "@types/bun": "latest",

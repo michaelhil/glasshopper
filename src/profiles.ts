@@ -3,9 +3,27 @@ import { dirname, join } from "node:path";
 import type { DisplayInfo, GlasshopperProfile, PanelProfile, Placement, Rect, WindowInfo, WindowMatch } from "./types.ts";
 import { fail } from "./errors.ts";
 
-const profileDir = "profiles";
+const legacyProfileDir = "profiles";
 
-export const profilePath = (name: string): string => join(profileDir, `${name}.json`);
+export const legacyProfileDirectory = (): string => legacyProfileDir;
+
+export const profileDirectory = (): string => {
+  const override = process.env["GLASSHOPPER_PROFILE_DIR"];
+  if (override) {
+    return override;
+  }
+
+  const appData = process.env["APPDATA"];
+  if (appData) {
+    return join(appData, "Glasshopper", "profiles");
+  }
+
+  return legacyProfileDir;
+};
+
+export const profilePath = (name: string): string => join(profileDirectory(), `${name}.json`);
+
+export const legacyProfilePath = (name: string): string => join(legacyProfileDir, `${name}.json`);
 
 export const emptyProfile = (): GlasshopperProfile => ({
   version: 1,
@@ -14,11 +32,16 @@ export const emptyProfile = (): GlasshopperProfile => ({
 
 export const readProfile = async (name: string): Promise<GlasshopperProfile> => {
   const file = Bun.file(profilePath(name));
-  if (!(await file.exists())) {
-    return emptyProfile();
+  if (await file.exists()) {
+    return (await file.json()) as GlasshopperProfile;
   }
 
-  return (await file.json()) as GlasshopperProfile;
+  const legacyFile = Bun.file(legacyProfilePath(name));
+  if (await legacyFile.exists()) {
+    return (await legacyFile.json()) as GlasshopperProfile;
+  }
+
+  return emptyProfile();
 };
 
 export const writeProfile = async (name: string, profile: GlasshopperProfile): Promise<void> => {

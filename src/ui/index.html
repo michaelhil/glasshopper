@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glasshopper</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="sidebar">
+        <div>
+          <h1>Glasshopper</h1>
+          <p id="sim-state" class="muted">Loading...</p>
+        </div>
+
+        <label>
+          Profile
+          <input id="profile" value="a320" />
+        </label>
+
+        <label>
+          Target display
+          <select id="display"></select>
+        </label>
+
+        <button id="listen" class="primary" type="button">+</button>
+        <div id="listen-status" class="status">Listener stopped.</div>
+      </aside>
+
+      <section class="content">
+        <header class="toolbar">
+          <button id="refresh" type="button">Refresh</button>
+          <button id="preflight" type="button">Preflight</button>
+          <button id="apply" type="button">Apply</button>
+          <button id="save-layout" type="button">Save Layout</button>
+        </header>
+
+        <section>
+          <h2>Saved Panels</h2>
+          <div id="saved-panels" class="panel-list"></div>
+        </section>
+
+        <section>
+          <h2>Live Pop-Outs</h2>
+          <div id="live-panels" class="panel-list"></div>
+        </section>
+
+        <pre id="log" class="log"></pre>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>

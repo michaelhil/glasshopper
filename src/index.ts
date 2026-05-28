@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readdir } from "node:fs/promises";
-import { getBoolean, getString, helpText, parseCli, parseRect, parseWindowMatch, requireString } from "./cli.ts";
+import { getBoolean, getNumber, getString, helpText, parseCli, parseRect, parseWindowMatch, requireString } from "./cli.ts";
 import { toErrorMessage } from "./errors.ts";
 import { formatDisplay, formatWindow } from "./format.ts";
 import { describePanelWindows, formatPanelStatus, listPanelWindows } from "./panels.ts";
@@ -15,7 +15,7 @@ import {
   resolveRect,
   writeProfile
 } from "./profiles.ts";
-import type { DisplayInfo, GlasshopperProfile, PanelProfile, PlatformAdapter, WindowInfo } from "./types.ts";
+import type { DisplayInfo, GlasshopperProfile, PanelProfile, PlatformAdapter, Rect, WindowInfo } from "./types.ts";
 
 const findDisplayByArg = (displays: readonly DisplayInfo[], value: string): DisplayInfo => {
   const index = Number(value);
@@ -49,6 +49,12 @@ const promptLine = async (message: string): Promise<string> => {
     });
   });
   return line.trim();
+};
+
+const sleep = async (milliseconds: number): Promise<void> => {
+  await new Promise<void>((resolve): void => {
+    setTimeout(resolve, milliseconds);
+  });
 };
 
 const glasshopperTitle = (profileName: string, panelName: string): string =>
@@ -204,6 +210,82 @@ const bringInOffscreenPanels = async (input: {
   }
 
   return panels.length;
+};
+
+const captureNextPanel = async (input: {
+  readonly platform: PlatformAdapter;
+  readonly profileName: string;
+  readonly name: string;
+  readonly displayArg: string;
+  readonly flags: ReadonlyMap<string, string | true>;
+  readonly alwaysOnTop: boolean;
+  readonly timeoutMs: number;
+  readonly intervalMs: number;
+}): Promise<WindowInfo> => {
+  const [displays, baselineWindows, profile] = await Promise.all([
+    input.platform.listDisplays(),
+    input.platform.listWindows({ includeAll: true }),
+    readProfile(input.profileName)
+  ]);
+  const display = findDisplayByArg(displays, input.displayArg);
+  const baselineHandles = new Set(
+    listPanelWindows(baselineWindows).map((window) => window.handle.toLocaleLowerCase())
+  );
+  const deadline = Date.now() + input.timeoutMs;
+
+  while (Date.now() <= deadline) {
+    const windows = await input.platform.listWindows({ includeAll: true });
+    const panel = listPanelWindows(windows).find(
+      (window) => !baselineHandles.has(window.handle.toLocaleLowerCase())
+    );
+
+    if (!panel) {
+      await sleep(input.intervalMs);
+      continue;
+    }
+
+    const title = glasshopperTitle(input.profileName, input.name);
+    const margin = 16;
+    const defaultX = display.workingArea.x - display.bounds.x + margin;
+    const defaultY = display.workingArea.y - display.bounds.y + margin;
+    const defaultWidth = Math.min(panel.rect.width || 1024, display.workingArea.width - margin * 2);
+    const defaultHeight = Math.min(panel.rect.height || 768, display.workingArea.height - margin * 2);
+    const relativeRect: Rect = {
+      x: getNumber(input.flags, "x", defaultX)!,
+      y: getNumber(input.flags, "y", defaultY)!,
+      width: getNumber(input.flags, "width", defaultWidth)!,
+      height: getNumber(input.flags, "height", defaultHeight)!
+    };
+
+    await setWindowTitleViaAgent(panel.handle, title);
+    await input.platform.moveWindow({
+      handle: panel.handle,
+      rect: {
+        x: display.bounds.x + relativeRect.x,
+        y: display.bounds.y + relativeRect.y,
+        width: relativeRect.width,
+        height: relativeRect.height
+      },
+      alwaysOnTop: input.alwaysOnTop
+    });
+
+    const savedPanel = createPanelProfile({
+      name: input.name,
+      window: {
+        titleExact: title,
+        processName: panel.processName,
+        className: panel.className
+      },
+      display,
+      rect: relativeRect,
+      alwaysOnTop: input.alwaysOnTop
+    });
+    await writeProfile(input.profileName, upsertPanel(profile, savedPanel));
+
+    return { ...panel, title };
+  }
+
+  throw new Error(`Timed out after ${Math.round(input.timeoutMs / 1000)}s waiting for a new MSFS pop-out panel.`);
 };
 
 const adoptUnprofiledPanels = async (input: {
@@ -372,6 +454,25 @@ const main = async (): Promise<void> => {
     if (moved === 0) {
       console.log("No offscreen MSFS pop-out panels found.");
     }
+    return;
+  }
+
+  if (command === "capture-next") {
+    const profileName = getString(flags, "profile", "default")!;
+    const name = requireString(flags, "name");
+    console.log(`Waiting for next MSFS pop-out panel to save as "${name}".`);
+    console.log("Return to MSFS fullscreen and pop out the panel now.");
+    const window = await captureNextPanel({
+      platform,
+      profileName,
+      name,
+      displayArg: getString(flags, "display", "0")!,
+      flags,
+      alwaysOnTop: getBoolean(flags, "topmost"),
+      timeoutMs: getNumber(flags, "timeout", 60)! * 1000,
+      intervalMs: getNumber(flags, "interval", 500)!
+    });
+    console.log(`Captured ${window.handle} as ${glasshopperTitle(profileName, name)} in "${profileName}".`);
     return;
   }
 
