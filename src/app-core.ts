@@ -1,6 +1,6 @@
 import { readdir } from "node:fs/promises";
 import { describePanelWindows, listPanelWindows } from "./panels.ts";
-import { getChasePlaneState } from "./chaseplane.ts";
+import { getChasePlaneState, getLatestChasePlaneLoadedView } from "./chaseplane.ts";
 import { createPlatformAdapter } from "./platform/windows.ts";
 import { captureClickViaAgent, getSimStateViaAgent, listMsfsProcessesViaAgent, setWindowTitleViaAgent } from "./platform/windows-agent.ts";
 import {
@@ -259,6 +259,9 @@ export const bindPanelSource = async (
     cameraViewTypeAndIndex0?: number;
     cameraViewTypeAndIndex1?: number;
     chasePlaneBridgeConnected?: boolean;
+    chasePlaneViewGuid?: string;
+    chasePlaneViewName?: string;
+    chasePlaneViewMode?: number;
     clickMethod: "altGrClick" | "ctrlClick";
     capturedAt: string;
   } = {
@@ -270,6 +273,16 @@ export const bindPanelSource = async (
   };
   if (chasePlaneState?.bridgeConnected != null) {
     source.chasePlaneBridgeConnected = chasePlaneState.bridgeConnected;
+  }
+  if (chasePlaneState?.detected) {
+    const chasePlaneView = await getLatestChasePlaneLoadedView(simState?.aircraftPath);
+    if (chasePlaneView) {
+      source.chasePlaneViewGuid = chasePlaneView.guid;
+      source.chasePlaneViewName = chasePlaneView.name;
+      if (chasePlaneView.mode != null) {
+        source.chasePlaneViewMode = chasePlaneView.mode;
+      }
+    }
   }
   if (simState?.aircraftName) {
     source.aircraftName = simState.aircraftName;

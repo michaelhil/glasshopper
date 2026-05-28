@@ -36,7 +36,7 @@ const panelCard = (panel, saved) => {
   const isChasePlaneSource = panel.source?.cameraProvider === "chaseplane" || Boolean(state.data?.chasePlane?.detected && panel.source && !hasStrongSource);
   const sourceLabel = panel.source
     ? isChasePlaneSource
-      ? `chaseplane-source${panel.source.chasePlaneBridgeConnected ? "" : "-offline"}`
+      ? `chaseplane:${panel.source.chasePlaneViewName || "view unknown"}${panel.source.chasePlaneBridgeConnected ? "" : " offline"}`
       : hasStrongSource
         ? "source-bound"
         : "weak-source"
@@ -147,8 +147,12 @@ const refresh = async () => {
   state.data = await api(`/api/state?profile=${encodeURIComponent(state.profile)}`);
 
   const sim = state.data.simState;
+  const chasePlane = state.data.chasePlane;
+  const chasePlaneText = chasePlane?.detected
+    ? ` - ChasePlane ${chasePlane.bridgeConnected ? "bridge connected" : "detected"}${chasePlane.latestView ? ` (${chasePlane.latestView.name})` : ""}`
+    : "";
   $("sim-state").textContent = sim?.connected
-    ? `SimConnect connected: ${sim.aircraftName || "aircraft unknown"}${state.data.chasePlane?.detected ? ` · ChasePlane ${state.data.chasePlane.bridgeConnected ? "bridge connected" : "detected"}` : ""}`
+    ? `SimConnect connected: ${sim.aircraftName || "aircraft unknown"}${chasePlaneText}`
     : "SimConnect not connected";
 
   const display = $("display");

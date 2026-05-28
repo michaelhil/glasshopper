@@ -85,6 +85,9 @@ export interface PanelSourceBinding {
   readonly cameraViewTypeAndIndex0?: number;
   readonly cameraViewTypeAndIndex1?: number;
   readonly chasePlaneBridgeConnected?: boolean;
+  readonly chasePlaneViewGuid?: string;
+  readonly chasePlaneViewName?: string;
+  readonly chasePlaneViewMode?: number;
   readonly clickMethod: "altGrClick" | "ctrlClick";
   readonly capturedAt: string;
 }

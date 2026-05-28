@@ -49,6 +49,7 @@ public static class GlasshopperNativeWindows {
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
   [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int X, int Y);
+  [DllImport("user32.dll")] public static extern bool GetCursorPos(out Point lpPoint);
   [DllImport("user32.dll")] public static extern void mouse_event(uint dwFlags, int dx, int dy, uint dwData, UIntPtr dwExtraInfo);
   [DllImport("user32.dll")] public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
   [DllImport("user32.dll", SetLastError = true)] public static extern uint SendInput(uint nInputs, Input[] pInputs, int cbSize);
@@ -63,6 +64,11 @@ public static class GlasshopperNativeWindows {
     public int Top;
     public int Right;
     public int Bottom;
+  }
+
+  [StructLayout(LayoutKind.Sequential)] public struct Point {
+    public int X;
+    public int Y;
   }
 
   [StructLayout(LayoutKind.Sequential)] public struct Input {
@@ -284,6 +290,27 @@ function Set-AgentWindowTitle($payload) {
   [pscustomobject]@{ ok = $true }
 }
 
+function Close-AgentWindow($payload) {
+  Add-NativeWindowsType
+
+  $handleText = [string]$payload.handle
+  if (-not $handleText.StartsWith("0x")) {
+    $handleText = "0x$handleText"
+  }
+
+  $handle = [IntPtr]::new([Convert]::ToInt64($handleText, 16))
+  [void][GlasshopperNativeWindows]::ShowWindow($handle, 9)
+  [void][GlasshopperNativeWindows]::SetForegroundWindow($handle)
+  Start-Sleep -Milliseconds 100
+  [void][GlasshopperNativeWindows]::keybd_event([byte]0x12, 0, 0, [UIntPtr]::Zero)
+  [void][GlasshopperNativeWindows]::keybd_event([byte]0x73, 0, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 100
+  [void][GlasshopperNativeWindows]::keybd_event([byte]0x73, 0, 0x0002, [UIntPtr]::Zero)
+  [void][GlasshopperNativeWindows]::keybd_event([byte]0x12, 0, 0x0002, [UIntPtr]::Zero)
+
+  [pscustomobject]@{ ok = $true }
+}
+
 function Add-NativeMouseHookType {
   $source = @"
 using System;
@@ -402,22 +429,100 @@ function Invoke-AgentPopOutClick($payload) {
 
   [void][GlasshopperNativeWindows]::ShowWindow($mainHandle, 9)
   [void][GlasshopperNativeWindows]::SetForegroundWindow($mainHandle)
-  Start-Sleep -Milliseconds 350
+  Start-Sleep -Milliseconds 250
   [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
-  Start-Sleep -Milliseconds 200
-
-  Send-AgentLeftClick $x $y
   Start-Sleep -Milliseconds 250
 
+  Send-AgentLeftClick $x $y
+  Start-Sleep -Milliseconds 500
+
   if ($method -eq "ctrlClick") {
-    Send-AgentModifiedClick @([uint16]0xA2, [uint16]0xA3) $x $y
+    Send-AgentLegacyModifiedClick @([byte]0xA2, [byte]0xA3) $x $y
   } else {
-    # AltGr is seen by many apps as Ctrl+RightAlt. Send both instead of RightAlt alone.
-    Send-AgentModifiedClick @([uint16]0xA2, [uint16]0xA5) $x $y
+    Send-AgentLegacyModifiedClick @([byte]0xA5) $x $y
   }
 
   Start-Sleep -Milliseconds 100
   [pscustomobject]@{ ok = $true }
+}
+
+function Invoke-AgentMoveCursor($payload) {
+  Add-NativeWindowsType
+  [void][GlasshopperNativeWindows]::SetCursorPos([int]$payload.x, [int]$payload.y)
+  [pscustomobject]@{ ok = $true }
+}
+
+function Get-AgentCursorPosition($payload) {
+  Add-NativeWindowsType
+  $point = New-Object GlasshopperNativeWindows+Point
+  $ok = [GlasshopperNativeWindows]::GetCursorPos([ref]$point)
+  if (-not $ok) {
+    $code = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    throw "GetCursorPos failed with Win32 error $code"
+  }
+  [pscustomobject]@{ x = $point.X; y = $point.Y }
+}
+
+function Invoke-AgentFocusMsfs($payload) {
+  Add-NativeWindowsType
+  $mainHandle = Get-MsfsMainWindowHandle
+  if ($mainHandle -eq [IntPtr]::Zero) {
+    throw "MSFS main window was not found."
+  }
+  [void][GlasshopperNativeWindows]::ShowWindow($mainHandle, 9)
+  [void][GlasshopperNativeWindows]::SetForegroundWindow($mainHandle)
+  Start-Sleep -Milliseconds 300
+  if ($null -ne $payload.x -and $null -ne $payload.y) {
+    [void][GlasshopperNativeWindows]::SetCursorPos([int]$payload.x, [int]$payload.y)
+  }
+  [pscustomobject]@{ ok = $true }
+}
+
+function Invoke-AgentDebugClick($payload) {
+  Add-NativeWindowsType
+  $x = [int]$payload.x
+  $y = [int]$payload.y
+  $mode = [string]$payload.mode
+
+  $mainHandle = Get-MsfsMainWindowHandle
+  if ($mainHandle -eq [IntPtr]::Zero) {
+    throw "MSFS main window was not found."
+  }
+
+  [void][GlasshopperNativeWindows]::ShowWindow($mainHandle, 9)
+  [void][GlasshopperNativeWindows]::SetForegroundWindow($mainHandle)
+  Start-Sleep -Milliseconds 500
+  [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
+  Start-Sleep -Milliseconds 500
+
+  switch ($mode) {
+    "plain" {
+      Send-AgentLeftClick $x $y
+    }
+    "right-alt" {
+      Send-AgentLegacyModifiedClick @([byte]0xA5) $x $y
+    }
+    "left-alt" {
+      Send-AgentLegacyModifiedClick @([byte]0xA4) $x $y
+    }
+    "right-alt-long" {
+      Send-AgentLegacyModifiedClickWithHold @([byte]0xA5) $x $y 1200
+    }
+    "right-alt-no-focus-click" {
+      Send-AgentLegacyModifiedClick @([byte]0xA5) $x $y
+    }
+    "ctrl-right-alt" {
+      Send-AgentLegacyModifiedClick @([byte]0xA2, [byte]0xA5) $x $y
+    }
+    "ctrl" {
+      Send-AgentLegacyModifiedClick @([byte]0xA2, [byte]0xA3) $x $y
+    }
+    default {
+      throw "Unknown debug click mode: $mode"
+    }
+  }
+
+  [pscustomobject]@{ ok = $true; mode = $mode; x = $x; y = $y }
 }
 
 function New-AgentKeyboardInput($vk, $flags) {
@@ -429,6 +534,35 @@ function New-AgentKeyboardInput($vk, $flags) {
   $input.u.ki.time = 0
   $input.u.ki.dwExtraInfo = [UIntPtr]::Zero
   $input
+}
+
+function New-AgentKeyboardScanInput($scan, $flags) {
+  $input = New-Object GlasshopperNativeWindows+Input
+  $input.type = 1
+  $input.u.ki.wVk = 0
+  $input.u.ki.wScan = [uint16]$scan
+  $input.u.ki.dwFlags = [uint32]$flags
+  $input.u.ki.time = 0
+  $input.u.ki.dwExtraInfo = [UIntPtr]::Zero
+  $input
+}
+
+function New-AgentKeyDownInput($vk) {
+  switch ([uint16]$vk) {
+    0xA2 { return New-AgentKeyboardScanInput 0x1D 0x0008 }
+    0xA3 { return New-AgentKeyboardScanInput 0x1D 0x0009 }
+    0xA5 { return New-AgentKeyboardScanInput 0x38 0x0009 }
+    default { return New-AgentKeyboardInput $vk 0 }
+  }
+}
+
+function New-AgentKeyUpInput($vk) {
+  switch ([uint16]$vk) {
+    0xA2 { return New-AgentKeyboardScanInput 0x1D 0x000A }
+    0xA3 { return New-AgentKeyboardScanInput 0x1D 0x000B }
+    0xA5 { return New-AgentKeyboardScanInput 0x38 0x000B }
+    default { return New-AgentKeyboardInput $vk 0x0002 }
+  }
 }
 
 function New-AgentMouseInput($flags) {
@@ -464,14 +598,58 @@ function Send-AgentModifiedClick($keys, $x, $y) {
   [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
   $events = @()
   foreach ($key in $keys) {
-    $events += New-AgentKeyboardInput $key 0
+    $events += New-AgentKeyDownInput $key
   }
   $events += New-AgentMouseInput 0x0002
   $events += New-AgentMouseInput 0x0004
   foreach ($key in @($keys | Sort-Object -Descending)) {
-    $events += New-AgentKeyboardInput $key 0x0002
+    $events += New-AgentKeyUpInput $key
   }
   Send-AgentInputs $events
+}
+
+function Send-AgentLegacyModifiedClick($keys, $x, $y) {
+  Send-AgentLegacyModifiedClickWithHold $keys $x $y 500
+}
+
+function Send-AgentLegacyModifiedClickWithHold($keys, $x, $y, $holdMs) {
+  [void][GlasshopperNativeWindows]::SetCursorPos($x, $y)
+  foreach ($key in $keys) {
+    Send-AgentLegacyKeyEvent $key $false
+  }
+  Start-Sleep -Milliseconds $holdMs
+  [GlasshopperNativeWindows]::mouse_event(0x0002, $x, $y, 0, [UIntPtr]::Zero)
+  Start-Sleep -Milliseconds 200
+  [GlasshopperNativeWindows]::mouse_event(0x0004, $x, $y, 0, [UIntPtr]::Zero)
+  foreach ($key in @($keys | Sort-Object -Descending)) {
+    Send-AgentLegacyKeyEvent $key $true
+  }
+  Start-Sleep -Milliseconds 100
+  foreach ($key in @($keys | Sort-Object -Descending)) {
+    Send-AgentLegacyKeyEvent $key $true
+  }
+}
+
+function Send-AgentLegacyKeyEvent($key, $up) {
+  $scan = 0
+  $flags = if ($up) { 0x0002 } else { 0 }
+  switch ([byte]$key) {
+    0xA3 {
+      $scan = 0x1D
+      $flags = $flags -bor 0x0001
+    }
+    0xA5 {
+      $scan = 0x38
+      $flags = $flags -bor 0x0001
+    }
+    0xA2 {
+      $scan = 0x1D
+    }
+    0xA4 {
+      $scan = 0x38
+    }
+  }
+  [GlasshopperNativeWindows]::keybd_event([byte]$key, [byte]$scan, [uint32]$flags, [UIntPtr]::Zero)
 }
 
 function Get-MsfsProcesses {
@@ -771,12 +949,32 @@ try {
       Write-AgentResult (Set-AgentWindowTitle $payload)
       break
     }
+    "close-window" {
+      Write-AgentResult (Close-AgentWindow $payload)
+      break
+    }
     "capture-click" {
       Write-AgentResult (Capture-AgentClick $payload)
       break
     }
     "popout-click" {
       Write-AgentResult (Invoke-AgentPopOutClick $payload)
+      break
+    }
+    "move-cursor" {
+      Write-AgentResult (Invoke-AgentMoveCursor $payload)
+      break
+    }
+    "cursor-position" {
+      Write-AgentResult (Get-AgentCursorPosition $payload)
+      break
+    }
+    "focus-msfs" {
+      Write-AgentResult (Invoke-AgentFocusMsfs $payload)
+      break
+    }
+    "debug-click" {
+      Write-AgentResult (Invoke-AgentDebugClick $payload)
       break
     }
     "restore-camera" {

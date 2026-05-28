@@ -1,9 +1,10 @@
 import { createPanelProfile, readProfile, writeProfile } from "./profiles.ts";
 import { listPanelWindows } from "./panels.ts";
-import { getChasePlaneState } from "./chaseplane.ts";
+import { getChasePlaneState, getLatestChasePlaneLoadedView, setChasePlaneView } from "./chaseplane.ts";
 import { createPlatformAdapter } from "./platform/windows.ts";
 import {
   captureClickViaAgent,
+  getCursorPositionViaAgent,
   getSimStateViaAgent,
   popOutClickViaAgent,
   restoreCameraViaAgent,
@@ -130,12 +131,19 @@ export class CaptureListener {
   private active = false;
   private busy = false;
   private clickBusy = false;
+  private sessionId = 0;
   private baselineHandles = new Set<string>();
   private captured: CaptureResult[] = [];
   private pendingSource:
     | {
         readonly source: PanelSourceBinding;
         readonly expiresAt: number;
+      }
+    | undefined;
+  private pendingPanel:
+    | {
+        readonly panel: WindowInfo;
+        readonly capturedAt: number;
       }
     | undefined;
   private lastError: string | undefined;
@@ -146,9 +154,12 @@ export class CaptureListener {
   };
 
   async start(options: CaptureOptions): Promise<void> {
+    const sessionId = this.sessionId + 1;
+    this.sessionId = sessionId;
     this.options = options;
     this.captured = [];
     this.pendingSource = undefined;
+    this.pendingPanel = undefined;
     this.lastError = undefined;
     const platform = createPlatformAdapter();
     const windows = await platform.listWindows({ includeAll: false });
@@ -156,12 +167,13 @@ export class CaptureListener {
       listPanelWindows(windows).map((window) => window.handle.toLocaleLowerCase())
     );
     this.active = true;
-    void this.loop();
-    void this.clickLoop();
+    void this.loop(sessionId);
+    void this.clickLoop(sessionId);
   }
 
   stop(): void {
     this.active = false;
+    this.sessionId++;
   }
 
   snapshot(): CaptureListenerSnapshot {
@@ -191,7 +203,65 @@ export class CaptureListener {
     return snapshot;
   }
 
-  private async loop(): Promise<void> {
+  private takePendingSource(): PanelSourceBinding | undefined {
+    const source = this.pendingSource && this.pendingSource.expiresAt > Date.now()
+      ? this.pendingSource.source
+      : undefined;
+    this.pendingSource = undefined;
+    return source;
+  }
+
+  private async createSourceFromPoint(point: { readonly x: number; readonly y: number }): Promise<PanelSourceBinding> {
+    const simState = process.platform === "win32" ? await getSimStateViaAgent() : undefined;
+    const chasePlaneState = process.platform === "win32"
+      ? await getChasePlaneState(simState?.aircraftPath)
+      : undefined;
+    const bindingInput: {
+      x: number;
+      y: number;
+      clickMethod: "altGrClick" | "ctrlClick";
+      cameraProvider?: "msfs" | "chaseplane" | "manual";
+      chasePlaneBridgeConnected?: boolean;
+      chasePlaneViewGuid?: string;
+      chasePlaneViewName?: string;
+      chasePlaneViewMode?: number;
+      simState?: {
+        readonly aircraftName?: string;
+        readonly aircraftPath?: string;
+        readonly cameraState?: number;
+        readonly cameraViewTypeAndIndex0?: number;
+        readonly cameraViewTypeAndIndex1?: number;
+      };
+    } = {
+      x: point.x,
+      y: point.y,
+      clickMethod: "altGrClick",
+      cameraProvider: chasePlaneState?.detected ? "chaseplane" : "msfs"
+    };
+    if (chasePlaneState?.bridgeConnected != null) {
+      bindingInput.chasePlaneBridgeConnected = chasePlaneState.bridgeConnected;
+    }
+    if (chasePlaneState?.detected) {
+      const chasePlaneView = await getLatestChasePlaneLoadedView(simState?.aircraftPath);
+      if (chasePlaneView) {
+        bindingInput.chasePlaneViewGuid = chasePlaneView.guid;
+        bindingInput.chasePlaneViewName = chasePlaneView.name;
+        if (chasePlaneView.mode != null) {
+          bindingInput.chasePlaneViewMode = chasePlaneView.mode;
+        }
+      }
+    }
+    if (simState) {
+      bindingInput.simState = simState;
+    }
+    return createSourceBinding(bindingInput);
+  }
+
+  private isCurrentSession(sessionId: number): boolean {
+    return this.active && this.sessionId === sessionId;
+  }
+
+  private async loop(sessionId: number): Promise<void> {
     if (this.busy) {
       return;
     }
@@ -209,10 +279,25 @@ export class CaptureListener {
         }
 
         this.baselineHandles.add(panel.handle.toLocaleLowerCase());
-        const pendingSource = this.pendingSource && this.pendingSource.expiresAt > Date.now()
-          ? this.pendingSource.source
+        const cursorSource = process.platform === "win32"
+          ? await this.createSourceFromPoint(await getCursorPositionViaAgent())
           : undefined;
-        this.pendingSource = undefined;
+        const pendingSource = this.takePendingSource() ?? cursorSource;
+        if (!pendingSource) {
+          this.pendingPanel = {
+            panel,
+            capturedAt: Date.now()
+          };
+          await sleep(1500);
+          const lateSource = this.takePendingSource();
+          this.pendingPanel = undefined;
+          const result = await capturePanelWindow(platform, panel, {
+            ...this.options,
+            ...(lateSource ? { source: lateSource } : {})
+          });
+          this.captured = [...this.captured, result];
+          continue;
+        }
         const result = await capturePanelWindow(platform, panel, {
           ...this.options,
           ...(pendingSource ? { source: pendingSource } : {})
@@ -227,57 +312,33 @@ export class CaptureListener {
     }
   }
 
-  private async clickLoop(): Promise<void> {
-    if (this.clickBusy) {
+  private async clickLoop(sessionId: number): Promise<void> {
+    if (this.clickBusy && this.sessionId === sessionId) {
       return;
     }
     this.clickBusy = true;
     try {
-      while (this.active) {
-        const click = await captureClickViaAgent(30000);
-        if (!this.active) {
+      while (this.isCurrentSession(sessionId)) {
+        const click = await captureClickViaAgent(10000);
+        if (!this.isCurrentSession(sessionId)) {
           break;
         }
-        const simState = process.platform === "win32" ? await getSimStateViaAgent() : undefined;
-        const chasePlaneState = process.platform === "win32"
-          ? await getChasePlaneState(simState?.aircraftPath)
-          : undefined;
-        const bindingInput: {
-          x: number;
-          y: number;
-          clickMethod: "altGrClick" | "ctrlClick";
-          cameraProvider?: "msfs" | "chaseplane" | "manual";
-          chasePlaneBridgeConnected?: boolean;
-          simState?: {
-            readonly aircraftName?: string;
-            readonly aircraftPath?: string;
-            readonly cameraState?: number;
-            readonly cameraViewTypeAndIndex0?: number;
-            readonly cameraViewTypeAndIndex1?: number;
-          };
-        } = {
-            x: click.x,
-            y: click.y,
-            clickMethod: "altGrClick",
-            cameraProvider: chasePlaneState?.detected ? "chaseplane" : "msfs"
-        };
-        if (chasePlaneState?.bridgeConnected != null) {
-          bindingInput.chasePlaneBridgeConnected = chasePlaneState.bridgeConnected;
-        }
-        if (simState) {
-          bindingInput.simState = simState;
-        }
         this.pendingSource = {
-          source: createSourceBinding(bindingInput),
+          source: await this.createSourceFromPoint(click),
           expiresAt: Date.now() + 12000
         };
+        if (this.pendingPanel && Date.now() - this.pendingPanel.capturedAt < 5000) {
+          this.pendingPanel = undefined;
+        }
       }
     } catch (error) {
-      if (this.active) {
+      if (this.isCurrentSession(sessionId)) {
         this.lastError = error instanceof Error ? error.message : String(error);
       }
     } finally {
-      this.clickBusy = false;
+      if (this.sessionId === sessionId) {
+        this.clickBusy = false;
+      }
     }
   }
 }
@@ -288,6 +349,9 @@ export const createSourceBinding = (input: {
   readonly clickMethod: "altGrClick" | "ctrlClick";
   readonly cameraProvider?: "msfs" | "chaseplane" | "manual";
   readonly chasePlaneBridgeConnected?: boolean;
+  readonly chasePlaneViewGuid?: string;
+  readonly chasePlaneViewName?: string;
+  readonly chasePlaneViewMode?: number;
   readonly simState?: {
     readonly aircraftName?: string;
     readonly aircraftPath?: string;
@@ -306,6 +370,9 @@ export const createSourceBinding = (input: {
     cameraViewTypeAndIndex0?: number;
     cameraViewTypeAndIndex1?: number;
     chasePlaneBridgeConnected?: boolean;
+    chasePlaneViewGuid?: string;
+    chasePlaneViewName?: string;
+    chasePlaneViewMode?: number;
     clickMethod: "altGrClick" | "ctrlClick";
     capturedAt: string;
   } = {
@@ -317,6 +384,15 @@ export const createSourceBinding = (input: {
   };
   if (input.chasePlaneBridgeConnected != null) {
     source.chasePlaneBridgeConnected = input.chasePlaneBridgeConnected;
+  }
+  if (input.chasePlaneViewGuid) {
+    source.chasePlaneViewGuid = input.chasePlaneViewGuid;
+  }
+  if (input.chasePlaneViewName) {
+    source.chasePlaneViewName = input.chasePlaneViewName;
+  }
+  if (input.chasePlaneViewMode != null) {
+    source.chasePlaneViewMode = input.chasePlaneViewMode;
   }
   if (input.simState?.aircraftName) {
     source.aircraftName = input.simState.aircraftName;
@@ -395,6 +471,18 @@ export const autoReopenPanel = async (input: {
 
   if (!useChasePlaneSource) {
     await restoreCameraViaAgent(cameraRequest);
+    await sleep(750);
+  } else if (saved.source.chasePlaneViewGuid) {
+    const chasePlaneViewRequest: {
+      guid: string;
+      aircraftPath?: string;
+    } = {
+      guid: saved.source.chasePlaneViewGuid
+    };
+    if (saved.source.aircraftPath) {
+      chasePlaneViewRequest.aircraftPath = saved.source.aircraftPath;
+    }
+    await setChasePlaneView(chasePlaneViewRequest);
     await sleep(750);
   }
 

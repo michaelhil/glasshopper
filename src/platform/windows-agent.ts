@@ -113,6 +113,9 @@ export const setWindowTitleViaAgent = async (handle: string, title: string): Pro
 export const captureClickViaAgent = async (timeoutMs: number): Promise<CapturedClick> =>
   await runAgent<CapturedClick>("capture-click", { timeoutMs });
 
+export const getCursorPositionViaAgent = async (): Promise<CapturedClick> =>
+  await runAgent<CapturedClick>("cursor-position");
+
 export const popOutClickViaAgent = async (input: {
   readonly x: number;
   readonly y: number;

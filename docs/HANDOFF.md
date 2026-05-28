@@ -374,18 +374,27 @@ Important behavior:
 
 - The `+` / Add Popout listener watches for new MSFS pop-out windows.
 - While Add Popout is active, Glasshopper also listens for the cockpit click that produced the pop-out and stores that as `source`.
+- If ChasePlane is detected, Add Popout stores the current ChasePlane view GUID/name/mode alongside the click source.
 - If the user closes a captured pop-out with the window `X`, the saved panel remains in the UI and `Apply` can still place an existing matching window. `Auto Reopen` attempts to recreate the window by returning to the source click and then recapturing the new pop-out.
 - The old manual `Bind Source` button was kept while testing, but source binding is now mostly automatic when Add Popout is active. It should probably be removed or demoted to an advanced repair action once the UI is cleaned up.
 
-Current Auto Reopen limitation:
+Current Auto Reopen status:
 
-- It can foreground MSFS and click the saved screen coordinate.
-- It works only if the simulator is already looking at the same cockpit source area.
-- With ChasePlane active, stock MSFS camera variables are not enough to restore that source view.
+- Auto Reopen worked live in MSFS 2024/Fenix A320 with ChasePlane active.
+- It restored the saved ChasePlane FCU view, performed the automated AltGr click, detected the new pop-out, renamed it to `Glasshopper:a320:panel-1`, and placed it from the saved profile.
+- The successful saved source was:
+
+```text
+panel: panel-1
+view: FCU
+chasePlaneViewGuid: 35214b50-0000-0000-806b-4417e850f9c7
+source point: x=3704, y=1712
+target display: Type-C / monitor:0
+```
 
 ## ChasePlane Deep Dive
 
-The user uses Parallel 42 ChasePlane, which takes over the default MSFS camera system. That is the likely reason Auto Reopen reached MSFS but did not recreate closed pop-outs.
+The user uses Parallel 42 ChasePlane, which takes over the default MSFS camera system. Stock MSFS camera variables were not enough to restore cockpit source views, but ChasePlane itself exposes a usable local JSON API.
 
 Local ChasePlane artifacts found on the test machine:
 
@@ -420,6 +429,15 @@ MOVE_INHIBIT_UI::0
 CAM_PRESET_LOAD::0,<guid>,camera_preset_strip
 CAM_MODE_SET::0,<guid>,NULL,NULL,0,1,1,1,1
 ```
+
+It also accepts a JSON API protocol. The working sequence is:
+
+```json
+{"message":"api_connect","payload":{"client_name":"Glasshopper"}}
+{"message":"cam_set_position","payload":<full ChasePlane view JSON>}
+```
+
+`src/chaseplane.ts` reads the saved view JSON from ChasePlane's work folder, sends `api_connect`, then sends `cam_set_position`. It waits for a matching `cam_mode_set` / preset GUID before returning.
 
 Observed Fenix A320 ChasePlane views:
 
@@ -459,7 +477,7 @@ So the third-party plugin toggle was already enabled.
 
 ### Key Finding
 
-The ChasePlane websocket is useful for observation, but direct desktop clients could not command camera changes by replaying the observed messages.
+Do not replay the raw observed bridge strings for camera control. That path did not work reliably:
 
 Tested and did not work:
 
@@ -471,7 +489,7 @@ CAM_MODE_SET::0,<guid>,NULL,NULL,0,1,1,1,1
 CP_INIT + WASM_PING + VERSION + UINFO + TOOLBAR_READY + view load
 ```
 
-Those commands did not appear in `cp_log.txt` as accepted `load_preset` actions, and the camera did not visibly jump.
+Those commands did not appear in `cp_log.txt` as accepted `load_preset` actions, and the camera did not visibly jump. The JSON API `api_connect` + `cam_set_position` path did work and moved ChasePlane views from the desktop Bun process. No MSFS helper is required for ChasePlane camera restore at this stage.
 
 The ChasePlane panel script shows in-sim comms channels:
 
@@ -484,31 +502,22 @@ COMM_BUS_WASM_CALLBACK
 API_REPLY
 ```
 
-It also includes text for "Enable 3rd party plugins" and says external applications/plugins can connect and control ChasePlane via API connections. The practical evidence suggests that a true in-sim plugin/panel path is needed, not a plain external websocket echo.
+Those may still matter later for deeper integration, but they are not needed for the current Auto Reopen feature.
 
-FSRealistic+ likely succeeds with ChasePlane because it is now a native in-sim MSFS 2024 panel/plugin and can use ChasePlane's internal communication path, rather than relying on a normal desktop process.
+## AltGr Automation Finding
 
-## Recommended Next Step: Glasshopper MSFS Helper
+The main Auto Reopen blocker was not fullscreen mode. Physical AltGr-click worked, but Glasshopper's synthetic click did not, because the PowerShell agent sent `VK_RMENU` / RightAlt without the Windows extended-key flag.
 
-Build a tiny Glasshopper Community package / in-sim helper panel.
+Fix:
 
-Goal:
-
-- Keep the Bun UI as the user's desktop control surface.
-- Add an in-sim helper that can talk to ChasePlane through the same in-sim comms/event bus the ChasePlane panel expects.
-- Let the desktop UI ask the helper to load a ChasePlane view, then perform the pop-out click and window placement from the existing Windows agent.
-
-Expected architecture:
-
-```text
-Bun UI / CLI
-  -> local Glasshopper helper websocket or HTTP endpoint
-  -> MSFS in-sim Glasshopper panel / WASM helper
-  -> ChasePlane in-sim comms/API channel
-  -> ChasePlane loads saved view
-  -> Windows agent performs modified click at saved source coordinate
-  -> Glasshopper captures and places the new pop-out
+```powershell
+RightAlt / VK_RMENU / 0xA5:
+  scan code 0x38
+  KEYEVENTF_EXTENDEDKEY 0x0001
+  KEYEVENTF_KEYUP 0x0002 on release
 ```
+
+After adding scan-code based key events with `KEYEVENTF_EXTENDEDKEY` for right-side modifiers, an automated `debug-click` RightAlt at the saved FCU point opened a raw MSFS `WASMINSTRUMENT` pop-out. The full Auto Reopen path then worked after a clean close/retry.
 
 For each saved panel source, store:
 
@@ -522,12 +531,12 @@ click method
 aircraft slug/path
 ```
 
-Auto Reopen flow with helper:
+Auto Reopen flow now:
 
 1. Validate MSFS, SimConnect, and ChasePlane are running.
 2. Validate the saved aircraft/profile matches the current aircraft.
-3. Ask the helper to load the saved ChasePlane view by GUID.
-4. Wait for a positive helper reply, or watch the ChasePlane bridge/log for the expected `CAM_PRESET_LOAD`.
+3. If the source has a ChasePlane view GUID, load the saved view through ChasePlane's JSON API.
+4. Wait for the expected ChasePlane preset/view confirmation.
 5. Wait a short configurable settle time.
 6. Foreground MSFS and send the saved AltGr/Ctrl click.
 7. Watch for a new pop-out.
@@ -550,29 +559,29 @@ Stress points for the helper:
 
 ## Next Implementation Plan
 
-1. Add ChasePlane source schema fields.
-   - Extend `PanelSourceBinding` with optional ChasePlane view GUID/name/mode.
-   - During Add Popout, capture the most recent ChasePlane `CAM_PRESET_LOAD` observed on the bridge and attach it to the pending source.
-
-2. Improve the UI source display.
+1. Improve the UI source display.
    - Show "ChasePlane view: MCDU Captain" when bound.
    - Hide or demote manual Bind Source when automatic source exists.
    - Add a repair action for missing source or missing view.
 
-3. Prototype helper package.
-   - Minimal MSFS Community package that loads an invisible/small Glasshopper panel.
-   - Register with the MSFS toolbar/event bus.
-   - Send and receive messages through a local bridge or SimConnect/LVar path.
-   - Prove one command: "load ChasePlane view GUID".
+2. Harden Auto Reopen.
+   - Add explicit UI log lines for "loading ChasePlane view", "foregrounding MSFS", "sending AltGr click", and "new pop-out detected".
+   - Add retry timing controls because MSFS/ChasePlane view settle time can vary.
+   - Guard against stale raw `WASMINSTRUMENT` windows before testing a new reopen.
 
-4. Wire helper into Auto Reopen.
-   - If `cameraProvider === "chaseplane"` and helper is connected, load view through helper before clicking.
-   - If helper is missing, show "manual view required" instead of silently failing.
+3. Add a source repair flow.
+   - Let the user rebind a saved panel source from the UI.
+   - If the saved ChasePlane GUID is missing, offer to bind the current ChasePlane view.
+   - Keep manual Bind Source only as an advanced repair action.
 
-5. Package/distribution.
+4. Package/distribution.
    - Bun UI executable for the desktop side.
-   - Glasshopper Community package installer/copy step for the MSFS helper.
    - Eventually sign the Windows helper/exe to avoid Application Control hash churn.
+   - Consider a small persistent Windows helper later for hooks/latency, but not as a requirement for ChasePlane view restore.
+
+5. Optional helper research.
+   - A Glasshopper MSFS Community helper may still be useful for deeper sim integration.
+   - Do not prioritize it for the current pop-out workflow because direct ChasePlane JSON control is working.
 
 ## How To Resume On Another Machine
 
@@ -612,4 +621,4 @@ http://localhost:32024
 %APPDATA%\Microsoft Flight Simulator 2024\WASM\MSFS2024\p42-util-chaseplane\work\wasm.log
 ```
 
-7. Use Add Popout to bind source clicks while creating panels. Do not expect ChasePlane Auto Reopen to fully work until the helper exists.
+7. Use Add Popout to bind source clicks while creating panels. If ChasePlane is active, Glasshopper should store the current ChasePlane view and Auto Reopen should be able to restore that view directly through `ws://localhost:8652`.
